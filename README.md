@@ -1,1 +1,1 @@
-# LRTI-classifier-Proteomics
+# LRTI-classifier
