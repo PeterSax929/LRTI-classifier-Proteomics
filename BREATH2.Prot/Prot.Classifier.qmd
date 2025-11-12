@@ -949,16 +949,20 @@ output_auc_roc <- function(preds_df, output_suffix) {
   # Compute per-fold AUC
   auc_df <- preds_df %>%
     group_by(fold) %>%
-    summarize(
-      auc = as.numeric(
-        pROC::roc(
-          response  = factor(LRTI_adjudication, levels = c("No Evidence", "Definite")),
-          predictor = pred,
-          direction = "<"
-        )$auc
-      )
-    ) %>%
-    ungroup()
+    summarize({
+  roc_obj <- pROC::roc(
+    response  = factor(LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = pred,
+    direction = "<"
+  )
+  ci_vals <- pROC::ci.auc(roc_obj, conf.level = 0.95)
+  tibble(
+    auc = as.numeric(roc_obj$auc),
+    auc_lower = ci_vals[1],
+    auc_upper = ci_vals[3]
+  )
+}, .groups = "drop")
+
 
   # Determine number of folds
   max_fold <- max(auc_df$fold)
@@ -1041,14 +1045,24 @@ legend("bottomright", legend = paste("Fold", 1:max_fold), col = 1:max_fold, lwd 
 
 
 
+# Mean AUC / 95% CI for Mean AUC
+mean_auc <- mean(auc_lassoRF$auc)
+
+sd_auc <- sd(auc_lassoRF$auc)
+n_folds <- nrow(auc_lassoRF)
+
+se_auc <- sd_auc / sqrt(n_folds)
+
+lower_ci <- mean_auc - qt(0.975, df = n_folds - 1) * se_auc
+upper_ci <- mean_auc + qt(0.975, df = n_folds - 1) * se_auc
+
+message("Lower AUC across folds: ", round(lower_ci, 3))
+message("Mean AUC across folds: ", round(mean_auc, 3))
+message("Upper AUC across folds: ", round(upper_ci, 3))
+
+
 
 print(auc_lassoRF)
-
-mean_auc <- mean(auc_lassoRF$auc)
-message("Mean AUC across folds: ", round(mean_auc, 3))
-
-
-
 
 
 ```
@@ -1064,11 +1078,11 @@ message("Mean AUC across folds: ", round(mean_auc, 3))
 
 ### AUC Values 
 
-lasso_fold_coefs: 0.919
+lasso_fold_coefs: 0.919  95%CI[0.829, 1.01]
 
-lasso_fold_coefs_top1_per_fold: 0.756
+lasso_fold_coefs_top1_per_fold: 0.756  95%CI[0.629, 0.883]
 
-lasso_fold_coefs_top3_per_fold: 0.905
+lasso_fold_coefs_top3_per_fold: 0.905  95%CI[0.822, 0.989]
 
 
 
