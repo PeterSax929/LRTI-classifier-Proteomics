@@ -1,4 +1,4 @@
 "protein","coef","fold","PROBEID","GENENAME","UNIPROT"
-"MCF2L",-0.538495898415865,5,"13934-3","MCF.2 cell line derived transforming sequence like","H7C275"
-"QPCTL",-0.489451604967672,5,"8866-53","glutaminyl-peptide cyclotransferase like","Q9NXS2"
-"GHRL",-0.483048687782871,3,"23581-131","ghrelin and obestatin prepropeptide","Q9UBU3"
+"MCF2L",-0.400054968295619,2,"13934-3","MCF.2 cell line derived transforming sequence like","H7C275"
+"GCH1",0.355141113319859,2,"11185-145","GTP cyclohydrolase 1","P30793"
+"GNLY",0.292614487399115,2,"14102-6","granulysin","B4E3H9"
