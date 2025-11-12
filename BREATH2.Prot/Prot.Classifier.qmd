@@ -4,10 +4,15 @@ format: html
 toc: true
 ---
 
-# Import and Organize Data
+# 1. Import Data
 
 ```{r}
 #| warning: false
+
+
+#---------------------1a. Import metadata and protein matrix-------------------#
+
+
 
 # Set file paths
 data_dir <- "C:/Users/User/Documents/UCSF/BREATH2.Prot/data"
@@ -16,31 +21,43 @@ results_dir <- "C:/Users/User/Documents/UCSF/BREATH2.Prot/results"
 setwd(data_dir)
 
 # Import data from Box
-vap_soma_normalized <- read.csv(file.path(data_dir, "vap_soma_normalized.csv"))
-JCI_expanded_metadata <- read.csv(file.path(data_dir, "fixed_metadata_10242025.csv"))
+vap_soma_normalized <- read.csv(
+  file.path(data_dir, "vap_soma_normalized.csv"), 
+  stringsAsFactors=F)
+
+JCI_expanded_metadata <- read.csv(
+  file.path(data_dir, "fixed_metadata_10242025.csv"),
+  stringsAsFactors=F)
+
+
+
+#-------------------------1b. Log2 Transformation------------------------------#
+
+
 
 # Log2 Transformation
 prot_cols <- grepl("^seq_", names(vap_soma_normalized))
 
 vap_soma_normalized[, prot_cols] <- log2(vap_soma_normalized[, prot_cols])
 
-write.csv(vap_soma_normalized, file.path(data_dir, "vap_soma_normalized_transformed.csv"), row.names = FALSE)
+write.csv(vap_soma_normalized, 
+          file.path(data_dir, "vap_soma_normalized_transformed.csv"),
+          row.names=F)
 
 
-# Include only the 150 patients with both transcriptomic and proteomic data
+
+
+#---------------------1c. Build data frame with all patients-------------------#
+
+
+
+
+# Include only the 151 patients in both datasets
 patients_vector <- intersect(vap_soma_normalized$patient_id, 
                              JCI_expanded_metadata$SubjectID)
 
 Prot.Data <- vap_soma_normalized[vap_soma_normalized$patient_id %in% patients_vector, ]
 Meta.Data <- JCI_expanded_metadata[JCI_expanded_metadata$SubjectID %in% patients_vector, ]
-
-#sum(duplicated(Meta.Data$SubjectID))
-#Meta.Data$SubjectID[duplicated(Meta.Data$SubjectID)]
-
-#length(patients_vector)
-
-#dim(Prot.Data)
-#dim(Meta.Data)
 
 # Ensures rows of Meta.Data match those of Prot.Data
 Meta.Data <- Meta.Data[match(Prot.Data$patient_id, Meta.Data$SubjectID), ]
@@ -52,28 +69,61 @@ patient_info_ALL <- data.frame(
   sex = Meta.Data$sex,
   age_in_years = Meta.Data$age_in_years,
   LRTI_adjudication = Meta.Data$LRTI_adjudication,
-  stringsAsFactors = FALSE
+  stringsAsFactors=F
 )
 
-write.csv(Meta.Data, file.path(data_dir, "meta.data.csv"), row.names = FALSE)
-write.csv(Prot.Data, file.path(data_dir, "prot.data.csv"), row.names = FALSE)
-write.csv(patient_info_ALL, file.path(data_dir, "patient_info_ALL.csv"), row.names = FALSE)
+write.csv(Meta.Data, 
+          file.path(data_dir, "meta.data.csv"),
+          row.names=F)
+
+write.csv(Prot.Data, 
+          file.path(data_dir, "prot.data.csv"),
+          row.names=F)
+
+write.csv(patient_info_ALL, 
+          file.path(data_dir, "patient_info_ALL.csv"),
+          row.names=F)
+
+
+
+
+#------------------1d. Build protein matrix for all patients-------------------#
+
+
+
 
 # Isolating Protein Matrix (Columns 211:7806 include the 7596 proteins)
-protein_mat_ALL <- as.matrix(Prot.Data[, prot_cols])
+protein_mat_PROBEID <- as.matrix(Prot.Data[, prot_cols])
 
 # Remove "seq_"
-colnames(protein_mat_ALL) <- sub("^seq_", "", colnames(protein_mat_ALL))
+colnames(protein_mat_PROBEID) <- sub("^seq_", "", colnames(protein_mat_PROBEID))
 
 # Replace underscores with hyphens
-colnames(protein_mat_ALL) <- gsub("_", "-", colnames(protein_mat_ALL))
+colnames(protein_mat_PROBEID) <- gsub("_", "-", colnames(protein_mat_PROBEID))
 
 # Sets rownames to patient_id 
-rownames(protein_mat_ALL) <- Prot.Data[, 1]
+rownames(protein_mat_PROBEID) <- Prot.Data$patient_id
 
-write.csv(protein_mat_ALL, file.path(data_dir, "protein_mat_ALL.csv"), row.names = TRUE)
+# Write csv
+write.csv(protein_mat_PROBEID, 
+          file.path(data_dir, "protein_mat_PROBEID.csv"), 
+          row.names=T)
 
-#print(head(protein_mat_ALL))
+
+
+
+#-------------------------------1e. Safety check-------------------------------#
+
+
+
+sum(duplicated(Meta.Data$SubjectID)) # Should be 0
+
+length(patients_vector) # Should be 151
+
+all(rownames(protein_mat_PROBEID) == patient_info_ALL$patient_id) # Should be TRUE
+
+
+
 ```
 
 
@@ -81,10 +131,15 @@ write.csv(protein_mat_ALL, file.path(data_dir, "protein_mat_ALL.csv"), row.names
 
 
 
-# Lookup table for proteins
+# 2. Lookup table for proteins
 
 ```{r}
 #| warning: false
+
+
+#------------------------------2a. Prepare Seq ids-----------------------------#
+
+
 
 library(dplyr)
 library(SomaScan.db)
@@ -92,18 +147,26 @@ library(SomaDataIO)
 library(AnnotationDbi)  
 library(tibble)
 
-seq_ids <- colnames(protein_mat_ALL)
+protein_mat_PROBEID <- read.csv(
+  file.path(data_dir, "protein_mat_PROBEID.csv"), 
+  stringsAsFactors=F, check.names=F)
+
+# Extracts all PROBEIDs in protein_mat_ALL
+seq_ids <- colnames(protein_mat_PROBEID)
 
 # Remove "seq_" and replace underscore with hyphen to match PROBEID keytype
-seq_ids <- sub("^seq_", "", seq_ids)
-seq_ids <- gsub("_", "-", seq_ids)
+#seq_ids <- sub("^seq_", "", seq_ids)
+#seq_ids <- gsub("_", "-", seq_ids)
 
-#head(seq_ids)
-#head(keys(SomaScan.db, keytype = "PROBEID"))
 
-#length(seq_ids)
 
-protein_lookup_table <- SomaScan.db::select(
+
+#----------------------2b. Build protein lookup table--------------------------#
+
+
+
+# Build table
+protein_lookup_table_ALL <- SomaScan.db::select(
   SomaScan.db,
   keys = seq_ids,
   keytype = "PROBEID",
@@ -111,18 +174,18 @@ protein_lookup_table <- SomaScan.db::select(
 )
 
 #Remove duplicates
-protein_lookup_table <- protein_lookup_table %>% distinct(PROBEID, .keep_all = TRUE)
+protein_lookup_table_ALL <- protein_lookup_table_ALL %>% distinct(PROBEID, .keep_all=T)
 
-write.csv(protein_lookup_table, file.path(data_dir, "protein_lookup_table.csv"), row.names = FALSE)
 
-nrow(protein_lookup_table)
 
-colSums(is.na(protein_lookup_table))
 
-#packageDescription("SomaScan.db")$Version
+#------------------------2c. Filter Unannotated PROBEIDs-----------------------#
+
+
+
 
 # Removes unannotated PROBEIDs
-protein_lookup_table <- protein_lookup_table %>%
+protein_lookup_table_ALL <- protein_lookup_table_ALL %>%
   filter(!is.na(SYMBOL)) %>%
   arrange(SYMBOL)
 
@@ -132,76 +195,123 @@ valid_ids <- keys(SomaScan.db, keytype = "PROBEID")
 # Find unmapped probes
 unmapped_probes <- setdiff(seq_ids, valid_ids)
 
-#length(unmapped_probes)
 
-write.csv(data.frame(PROBEID = unmapped_probes), file.path(data_dir, "unmapped_probes.csv"), 
-          row.names = FALSE)
-```
-
-
+# Write csv
+write.csv(data.frame(PROBEID = unmapped_probes), 
+          file.path(data_dir, "unmapped_probes.csv"), 
+          row.names=F)
 
 
 
-# Take mean expression for PROBEIDs that match to the same SYMBOL
 
-```{r}
-#| warning: false
 
-library(dplyr)
+#---------------------2d. Take mean expression for PROBEIDs--------------------#
 
-# Save the original PROBEID matrix for reruns
-protein_mat_PROBEID <- protein_mat_ALL
+
+
+
+
 
 # Keep only annotated probes
-protein_mat_ALL <- protein_mat_PROBEID[, colnames(protein_mat_PROBEID) %in% protein_lookup_table$PROBEID]
+protein_mat_PROBEID <- protein_mat_PROBEID[, colnames(protein_mat_PROBEID) %in% protein_lookup_table_ALL$PROBEID]
 
 # Reorder lookup table to match the columns in protein_mat_ALL
-protein_lookup_table <- protein_lookup_table[match(colnames(protein_mat_ALL), protein_lookup_table$PROBEID), ]
+protein_lookup_table_ALL <- protein_lookup_table_ALL[match(colnames(protein_mat_PROBEID), protein_lookup_table_ALL$PROBEID), ]
 
 # Confirm alignment
-stopifnot(all(colnames(protein_mat_ALL) == protein_lookup_table$PROBEID))
+stopifnot(all(colnames(protein_mat_PROBEID) == protein_lookup_table_ALL$PROBEID))
 
 # Collapse duplicate probes (mean expression per SYMBOL)
-protein_mat_ALL <- t(protein_mat_ALL) %>%
+protein_mat_PROBEID_t <- t(protein_mat_PROBEID) %>%
   as.data.frame() %>%
-  mutate(SYMBOL = protein_lookup_table$SYMBOL) %>%
+  mutate(SYMBOL = protein_lookup_table_ALL$SYMBOL) %>%
   group_by(SYMBOL) %>%
-  summarise(across(everything(), mean, na.rm = TRUE)) %>%
+  summarise(across(everything(), mean, na.rm=T)) %>%
   as.data.frame()
 
 # Restore to original shape
-rownames_tmp <- protein_mat_ALL$SYMBOL
-protein_mat_ALL <- as.data.frame(t(protein_mat_ALL[, -1]))
-colnames(protein_mat_ALL) <- rownames_tmp
+rownames_tmp <- protein_mat_PROBEID_t$SYMBOL
 
-# Check for duplicate symbols (should return FALSE)
-any(duplicated(colnames(protein_mat_ALL)))
+
+
+
+#--------------------------2e. Align tables------------------------------------#
+
+
+
+
+# Define protein_mat_ALL
+protein_mat_ALL <- as.data.frame(t(protein_mat_PROBEID_t[, -1]))
+colnames(protein_mat_ALL) <- rownames_tmp
+rownames(protein_mat_ALL) <- patients_vector
+
 
 # Remove duplicate SYMBOLs in lookup table to match collapsed matrix
-protein_lookup_table <- protein_lookup_table %>%
+protein_lookup_table <- protein_lookup_table_ALL %>%
   filter(SYMBOL %in% colnames(protein_mat_ALL)) %>%
-  distinct(SYMBOL, .keep_all = TRUE)
-
-# Confirm lengths match
-length(colnames(protein_mat_ALL))
-length(protein_lookup_table$SYMBOL)
-
-# How many symbols actually overlap
-sum(colnames(protein_mat_ALL) %in% protein_lookup_table$SYMBOL)
+  distinct(SYMBOL, .keep_all=T)
 
 # Match lookup table order to protein_mat_ALL column order
 protein_lookup_table <- protein_lookup_table[match(colnames(protein_mat_ALL),
                                                    protein_lookup_table$SYMBOL), ]
 
+
+# Write csvs
+write.csv(protein_lookup_table, 
+          file.path(data_dir, "protein_lookup_table.csv"),
+          row.names=F)
+
+write.csv(protein_mat_ALL, 
+          file.path(data_dir, "protein_mat_ALL.csv"), 
+          row.names=T)
+
+
+
+
+#------------------------------2f. Safety Check--------------------------------#
+
+
+
+length(unmapped_probes)
+
+nrow(protein_lookup_table) # Should be 6346
+
+# Check for duplicate symbols 
+any(duplicated(colnames(protein_mat_ALL)))  # Should return FALSE
+
+# Confirm lengths match
+length(colnames(protein_mat_ALL))  # Should be 6346
+length(protein_lookup_table$SYMBOL)  # SHould be 6346
+
+# How many symbols actually overlap
+sum(colnames(protein_mat_ALL) %in% protein_lookup_table$SYMBOL)  # Should be 6346
+
+
+
 ```
 
 
 
-# Prepare Protein Matrix and Patient Info for LASSO/RF
+# 3. Organize Data and Parameters
 
 
 ```{r}
 #| warning: false
+
+
+#-----------------3a. Subset both datasets to Definite/No Evidence-------------#
+
+
+
+
+# Read csvs
+protein_lookup_table <- read.csv( 
+          file.path(data_dir, "protein_lookup_table.csv"),
+          stringsAsFactors=F)
+
+protein_mat_ALL <- read.csv( 
+          file.path(data_dir, "protein_mat_ALL.csv"), 
+          stringsAsFactors=F, row.names=1)
 
 # Include only Definite and No Evidence patients
 patient_info <- patient_info_ALL[patient_info_ALL$LRTI_adjudication %in% 
@@ -211,11 +321,22 @@ patient_info <- patient_info_ALL[patient_info_ALL$LRTI_adjudication %in%
 protein_mat <- protein_mat_ALL[match(patient_info$patient_id, 
                                        rownames(protein_mat_ALL)), ]
 
-# Ensures that protein_mat rownames match patient_id column in patient_info
-all(rownames(protein_mat) == patient_info$patient_id)
+# Save outputs
+write.csv(patient_info, 
+          file.path(data_dir, "patient_info.csv"),
+          row.names=F)
 
-write.csv(patient_info, file.path(data_dir, "patient_info.csv"), row.names= FALSE)
-write.csv(protein_mat, file.path(data_dir, "protein_mat.csv"), row.names = TRUE)
+write.csv(protein_mat,
+          file.path(data_dir, "protein_mat.csv"),
+          row.names=T)
+
+
+
+
+#-------------------------3b. Define Workflow Parameters-----------------------#
+
+
+
 
 
 # Define parameters
@@ -231,61 +352,176 @@ Parameters <- data.frame(c(npatients, Definite, No_Evidence, nproteins, nfolds, 
 row.names(Parameters) = c("Patients", "Definite", "No Evidence", "Proteins", "Folds", "RF Trees")
 colnames(Parameters) = "Count"
 
-write.csv(Parameters, file.path(data_dir, "parameters.csv"), row.names = TRUE)
+# Write csv
+write.csv(Parameters, 
+          file.path(data_dir, "parameters.csv"),
+          row.names=T)
 
 print(Parameters)
 
 
+
+#-----------------------------3c. Safety Check---------------------------------#
+
+
+
+
+
+# Ensures that protein_mat rownames match patient_id column in patient_info
+all(rownames(protein_mat) == patient_info$patient_id)  # Should return TRUE
+
+any(is.na(match(patient_info$patient_id, 
+                rownames(protein_mat_ALL))))  # Should return FALSE
+
+# Ensures that protein_mat rownames match patient_id column in patient_info
+all(rownames(protein_mat) == patient_info$patient_id)  # Should return TRUE
+
+
+
+
+
+
 ```
 
   
   
   
-# Fold Assignments (5 Folds) 
+# 4. Fold Assignments
 
 
 ```{r}
 #| warning: false
 
-library(dplyr)
 
-# Import data 
-setwd(data_dir)
-patient_info <- read.csv("patient_info.csv", stringsAsFactors = FALSE)
+#------------------------4a. Import patient info-------------------------------#
+
+
+
+library(dplyr)
+library(rsample)
+
+
+
+
+# Read csvs
+patient_info <- read.csv(
+  file.path(data_dir, "patient_info.csv"), 
+  stringsAsFactors=F)
+
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names=1)
+
+# Define number of folds
+nfolds <- as.numeric(Parameters["Folds", "Count"])
+
+# Define number of No Evidence patients
+No_Evidence <- as.numeric(Parameters["No Evidence", "Count"])
+
+# Minimum required per fold
+min_NE_per_fold <- floor(No_Evidence / nfolds)
+
+
+
+
+
+
+
+
+#------------------------4b. Fold Assignment Using rsample --------------------#
+
+
+
+
+
+
+# Retry until constraints satisfied
+folds_ok <- FALSE
 
 # Set seed to 8634782 = "BREATH2" .. kinda?
 set.seed(8634782)
 
-folds_ok <- FALSE
-
-# Adds fold column to patient_info to create patient_info_with_folds
+# While loop
 while (!folds_ok) {
+
+  # Stratified vfold_cv using rsample
+  vfold_obj <- vfold_cv(
+    data = patient_info,
+    v = nfolds,
+    strata = "LRTI_adjudication"
+  )
+
+  # Create a data frame that maps each row to a fold
   patient_info_with_folds <- patient_info %>%
-    group_by(LRTI_adjudication) %>%
-    mutate(fold = sample(rep(1:nfolds, length.out = n()))) %>%
-    ungroup()
-  
-# Check if each fold has at least 6 "No Evidence" samples because ⌊33 / 5⌋ = 6
-  counts <- table(patient_info_with_folds$fold, patient_info_with_folds$LRTI_adjudication)
-  if (all(counts[, "No Evidence"] >= 6)) {
+    mutate(fold = NA_integer_)
+
+  # Fill in fold assignments
+  for (i in seq_len(nfolds)) {
+    fold_indices <- vfold_obj$splits[[i]]$in_id
+    # everything *not* in fold_indices is validation fold
+    val_indices <- setdiff(seq_len(nrow(patient_info)), fold_indices)
+    patient_info_with_folds$fold[val_indices] <- i
+  }
+
+  # Check constraint: minimum No Evidence per fold
+  counts <- table(
+    patient_info_with_folds$fold,
+    patient_info_with_folds$LRTI_adjudication
+  )
+
+  if (all(counts[, "No Evidence"] >= min_NE_per_fold)) {
     folds_ok <- TRUE
   }
 }
 
-# Patient info with fold assignment
-write.csv(patient_info_with_folds, file.path(data_dir, "patient_info_with_folds.csv"), row.names = FALSE)
+# Save
+write.csv(
+  patient_info_with_folds,
+  file.path(data_dir, "patient_info_with_folds.csv"),
+  row.names=F)
+
+
+
+
+
+
+
+#--------------------------------4c. Safety Check------------------------------#
+
+
+
+
+
 
 print(counts)
+
+print(min_NE_per_fold)
+
+
+
+
+
+
 ```
 Note: 33 no evidence patients creates one fold with a 14:7 definite ratio. This differs more than the 15:7 and 14:6 ratios for 32 no evidence patients
 
 
-# Run LASSO
+
+
+
+# 5. Run LASSO
 
 
 ```{r}
 
 #| warning: false
+
+
+
+#-----------------------5a. Ready data for LASSO Workflow----------------------#
+
+
+
 
 library(dplyr)
 library(magrittr)
@@ -295,14 +531,34 @@ library(tibble)
 set.seed(8634782)
 
 # Import data
-patient_info_with_folds <- read.csv(file.path(data_dir, "patient_info_with_folds.csv"), stringsAsFactors = FALSE)
-protein_mat <- read.csv(file.path(data_dir, "protein_mat.csv"), row.names = 1, check.names = FALSE)
+patient_info_with_folds <- read.csv(
+  file.path(data_dir, "patient_info_with_folds.csv"),
+  stringsAsFactors=F)
 
+protein_mat <- read.csv(
+  file.path(data_dir, "protein_mat.csv"),
+  stringsAsFactors=F, row.names=1, check.names=F)
+
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names=1)
+
+
+# Define nfolds
+nfolds <- as.numeric(Parameters["Folds", "Count"])
+
+# Prepare inputs for LASSO
 X <- as.matrix(protein_mat)  
 y <- patient_info_with_folds$LRTI_adjudication == "Definite"
 
 
-# ----------------------------------------------------------------------------#
+
+
+
+#--------------------------5b. LASSO Workflow----------------------------------#
+
+
+
 
 
 # Function to extract nonzero coefficients
@@ -324,8 +580,8 @@ lasso_coef_df <- function(mod) {
 # Function for a single outer CV fold
 lasso_cv_outer_fold <- function(test_fold) {
   train <- patient_info_with_folds$fold != test_fold
-  foldid <- patient_info_with_folds$fold[train]
-  foldid <- as.integer(as.factor(foldid))
+  foldid <- sample(rep(1:nfolds, length.out = sum(train)))
+
   
   mod <- glmnet::cv.glmnet(
     X[train, ], y[train],
@@ -365,17 +621,21 @@ lasso_fold_coefs <- merge(
 )
 
 
-#-----------------------------------------------------------------------------#
+
+
+#----------------5c. Define lasso_fold_coefs multiple ways---------------------#
+
+
 
 
 
 # Top 3 by absolute coefficient
-lasso_fold_coefs_top3 <- lasso_fold_coefs %>%
-  group_by(protein) %>%                       
-  slice_max(abs(coef), n = 1) %>%             
-  ungroup() %>%                               
-  arrange(desc(abs(coef))) %>%                
-  slice(1:3)      
+#lasso_fold_coefs_top3 <- lasso_fold_coefs %>%
+  #group_by(protein) %>%                       
+  #slice_max(abs(coef), n = 1) %>%             
+  #ungroup() %>%                               
+  #arrange(desc(abs(coef))) %>%                
+  #slice(1:3)      
 
 
 # Select top 1 per fold
@@ -391,46 +651,62 @@ lasso_fold_coefs_top3_per_fold <- lasso_fold_coefs %>%
   ungroup()
 
 
-#-----------------------------------------------------------------------------#
 
 
 # Save outputs
 write.csv(lasso_preds, 
           file.path(results_dir, "lasso_preds.csv"), 
-          row.names = FALSE)
+          row.names=F)
+
 write.csv(lasso_fold_coefs,
           file.path(results_dir, "lasso_fold_coefs.csv"),
-          row.names = FALSE)
-write.csv(lasso_fold_coefs_top3, 
-          file.path(results_dir, "lasso_folds_coefs_top3.csv"),
-          row.names = FALSE)
+          row.names=F)
+
+#write.csv(lasso_fold_coefs_top3, 
+          #file.path(results_dir, "lasso_folds_coefs_top3.csv"),
+          #row.names=F)
+
 write.csv(lasso_fold_coefs_top1_per_fold,
           file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-          row.names = FALSE)
+          row.names=F)
+
 write.csv(lasso_fold_coefs_top3_per_fold,
           file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-          row.names = FALSE)
+          row.names=F)
 
 
 
-#-----------------------------------------------------------------------------#
+
+#----------------------------5d. Safety Check----------------------------------#
 
 
-# Summaries
+
+# Summary
 print(table(lasso_fold_coefs$protein))
-print(lasso_fold_coefs_top3)
 
-all(lasso_fold_coefs$protein %in% protein_lookup_table$SYMBOL)
+all(lasso_fold_coefs$protein %in% 
+      protein_lookup_table$SYMBOL)  # Should return TRUE
+
+
+
 ```
-Notes: Both lasso_fold_coefs and lasso_fold_coefs_top3 are defined. Either can be substituted into the RF workflow.
 
 
 
-# Implement RF
+
+
+# 6. Implement RF
 
 
 ```{r}
 #| warning: false
+
+
+
+#----------------------------6a. Ready Data for RF Workflow--------------------#
+
+
+
 
 library(dplyr)
 library(magrittr)
@@ -440,12 +716,20 @@ library(tibble)
 set.seed(8634782)
 
 # Import data
-patient_info_with_folds <- read.csv(file.path(data_dir, "patient_info_with_folds.csv"), stringsAsFactors = FALSE)
-protein_mat <- read.csv(file.path(data_dir, "protein_mat.csv"), row.names = 1, check.names = FALSE)
+patient_info_with_folds <- read.csv(
+  file.path(data_dir, "patient_info_with_folds.csv"),
+  stringsAsFactors=F)
 
-# Make sure protein_mat has correct format
-#colnames(protein_mat) <- sub("^X", "", colnames(protein_mat))
-#colnames(protein_mat) <- gsub("\\.", "-", colnames(protein_mat))
+protein_mat <- read.csv(
+  file.path(data_dir, "protein_mat.csv"), 
+  stringsAsFactors=F, row.names=1, check.names=F)
+
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names=1)
+
+# Define ntrees 
+ntrees <- as.numeric(Parameters["RF Trees", "Count"])
 
 
 # Convert patient_id to character
@@ -454,15 +738,25 @@ patient_info_with_folds$patient_id <- as.character(patient_info_with_folds$patie
 # Import selected proteins
 lasso_fold_coefs <- read.csv(
   file.path(results_dir, "lasso_fold_coefs.csv"), 
-  stringsAsFactors = FALSE)
+  stringsAsFactors=F)
 
 lasso_fold_coefs_top1_per_fold <- read.csv(
   file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-  stringsAsFactors = FALSE)
+  stringsAsFactors=F)
 
 lasso_fold_coefs_top3_per_fold <- read.csv(
   file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-  stringsAsFactors = FALSE)
+  stringsAsFactors=F)
+
+
+
+
+
+#-------------------------6b. Choose proteins to run---------------------------#
+
+
+
+
 
 
 # Choose which LASSO feature set to use for RF (uncomment ONE line)
@@ -483,7 +777,9 @@ selected_lasso_coefs <- lasso_fold_coefs
 
 
 
-#-----------------------------------------------------------------------------#
+#-------------------------6c. RF Workflow--------------------------------------#
+
+
 
 
 
@@ -524,7 +820,10 @@ patient_info_with_folds <- as.data.frame(patient_info_with_folds)
 
 
 
-#-----------------------------------------------------------------------------#
+
+
+#--------------------------6d. Collect preds-----------------------------------#
+
 
 
 
@@ -543,7 +842,21 @@ rf_preds <- cv_list %>%
   dplyr::relocate(LRTI_adjudication, .after = patient_id)
 
 # Save RF predictions
-write.csv(rf_preds, file.path(results_dir, "lassoRF_preds.csv"), row.names = FALSE)
+write.csv(rf_preds, 
+          file.path(results_dir, "lassoRF_preds.csv"),
+          row.names=F)
+
+
+
+
+
+
+#------------------------6e. Collect votes-------------------------------------#
+
+
+
+
+
 
 # Collect RF votes (training set OOB probabilities)
 rf_votes <- cv_list %>%
@@ -560,129 +873,189 @@ rf_votes <- cv_list %>%
   dplyr::relocate(LRTI_adjudication, .after = patient_id)
 
 # Save votes
-write.csv(rf_votes, file.path(results_dir, "lassoRF_votes.csv"), row.names = FALSE)
-
-
-
-
-#-----------------------------------------------------------------------------#
+write.csv(rf_votes, 
+          file.path(results_dir, "lassoRF_votes.csv"),
+          row.names=F)
 
 
 
 
 
-#print(head(rf_preds))
-#print(head(rf_votes))
+
 ```
 
 
-# Generate ROC Graph
+
+
+
+
+# 7. Generate ROC Graph
 
 ```{r}
 #| warning: false
+
+
+
+
+
+
+#----------------------------7a. Import metadata & preds-----------------------#
+
+
+
+
 
 library(dplyr)
 library(magrittr)
 library(pROC)
 
-# Import out-of-fold LASSO / RF predictions
-lassoRF_preds <- read.csv(file.path(results_dir, "lassoRF_preds.csv"), stringsAsFactors = FALSE)
 
-# Ensure classes are correct
-lassoRF_preds$LRTI_adjudication <- factor(lassoRF_preds$LRTI_adjudication, 
-                                          levels = c("No Evidence", "Definite"))
+# Import fold assignments
+patient_info_with_folds <- read.csv(
+  file.path(data_dir, "patient_info_with_folds.csv"),
+  stringsAsFactors=F)
 
-# Function to calculate and plot ROC/AUC for LASSO / RF
-output_auc_roc_lassoRF <- function(preds_df, output_suffix) {
+# Import out-of-fold predictions
+lassoRF_preds <- read.csv(
+  file.path(results_dir, "lassoRF_preds.csv"),
+  stringsAsFactors=F)
 
-  # Compute overall ROC and AUC
-  roc_obj <- roc(preds_df$LRTI_adjudication == "Definite", preds_df$pred)
-  auc_value <- auc(roc_obj)
+# Ensure consistent factor levels
+lassoRF_preds$LRTI_adjudication <- factor(
+  lassoRF_preds$LRTI_adjudication,
+  levels = c("No Evidence", "Definite")
+)
 
-  message("Overall AUC for ", output_suffix, ": ", round(auc_value, 3))
-
-  # Plot ROC
-  plot(
-    roc_obj,
-    main = paste("ROC Curve -", output_suffix),
-    col = "#1c61b6",
-    lwd = 2
+# Merge once so we reuse this everywhere
+merged_preds <- lassoRF_preds %>%
+  dplyr::inner_join(
+    patient_info_with_folds %>% dplyr::select(patient_id, fold),
+    by = "patient_id"
   )
-  abline(a = 0, b = 1, lty = 2, col = "gray")
 
-  # Save to PDF
+
+
+
+
+#------------------------7b. Per-fold AUC + ROC plotting-----------------------#
+
+
+
+
+
+
+output_auc_roc <- function(preds_df, output_suffix) {
+
+  # Compute per-fold AUC
+  auc_df <- preds_df %>%
+    group_by(fold) %>%
+    summarize(
+      auc = as.numeric(
+        pROC::roc(
+          response  = factor(LRTI_adjudication, levels = c("No Evidence", "Definite")),
+          predictor = pred,
+          direction = "<"
+        )$auc
+      )
+    ) %>%
+    ungroup()
+
+  # Determine number of folds
+  max_fold <- max(auc_df$fold)
+
+  # Create ROC PDF (all folds overlayed)
   pdf(file.path(results_dir, paste0("ROC_", output_suffix, ".pdf")))
-  plot(
-    roc_obj,
-    main = paste("ROC Curve -", output_suffix),
-    col = "#1c61b6",
-    lwd = 2
-  )
-  abline(a = 0, b = 1, lty = 2, col = "gray")
+
+  for (i in 1:max_fold) {
+    fold_data <- preds_df %>% filter(fold == i)
+
+    roc_obj <- pROC::roc(
+      response  = factor(fold_data$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+      predictor = fold_data$pred,
+      direction = "<"
+    )
+
+    plot(roc_obj, add = (i != 1), col = i)
+  }
+
   dev.off()
 
-  # Return AUC
-  return(auc_value)
+  # Save per-fold AUC CSV at the very end (safer if plotting errors occur)
+  write.csv(
+    auc_df,
+    file.path(results_dir, paste0("cv_auc_", output_suffix, ".csv")),
+    row.names=F)
+
+  return(auc_df)
 }
 
-auc_lassoRF <- output_auc_roc_lassoRF(lassoRF_preds, "lassoRF")
+
+
+
+
+
+#------------------------------7c. Plot Graph (in QMD)-------------------------#
+
+
+
+
+
+
+
+# Run AUC computation and PDF creation
+auc_lassoRF <- output_auc_roc(merged_preds, "lassoRF")
+
+max_fold <- max(auc_lassoRF$fold)
+
+# Open empty plot for overlay with top-left orientation
+plot(0, 0, type = "n",
+     xlim = c(1, 0), ylim = c(0, 1),
+     xlab = "Specificity", ylab = "Sensitivity",
+     main = "ROC Curves by Fold")
+
+# Add diagonal reference
+lines(x = c(1, 0), y = c(0, 1), lty = 2, col = "gray")
+
+for (i in 1:max_fold) {
+  fold_data <- merged_preds %>% filter(fold == i)
+
+  roc_obj <- pROC::roc(
+    response  = factor(fold_data$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = fold_data$pred,
+    direction = "<"
+  )
+
+  # Plot specificity directly: axis direction flips via xlim
+  lines(roc_obj$specificities, roc_obj$sensitivities, col = i, lwd = 2)
+}
+
+legend("bottomright", legend = paste("Fold", 1:max_fold), col = 1:max_fold, lwd = 2)
+
+
+
+
+
+
+#------------------------------7d. Summaries----------------------------------#
+
+
+
+
+
 print(auc_lassoRF)
+
+mean_auc <- mean(auc_lassoRF$auc)
+message("Mean AUC across folds: ", round(mean_auc, 3))
+
+
+
+
+
 ```
 
 
 
 
-
-
-
-
-
-# Produced Files
-
-
-## Raw Data
-
-JCI_expanded_metadata -> Raw data from BOX including patient metadata
-
-vap_soma_normalized -> Raw data from BOX including patient proteomic data for 7596 proteins
-
-
-
-## Processed Data
-
-vap_soma_normalized_transformed -> log2 transformation of vap_soma_normalized
-
-prot.data -> vap_soma_normalized_transformed including only the 150 patients that are also present in JCI_expanded_metadata
-
-meta.data -> JCI_expanded_metadata including only the 150 patients that are also present in vap_soma_normalized_transformed
-
-protein_lookup_table -> data frame that shows symbol and gene name for each seq_id
-
-patient_info_ALL -> Includes only the patient_id, age_in_years, sex, and LRTI adjudication.
-
-protein_mat_ALL -> Includes only the patient_id as rownames, and the 7596 proteins
-
-patient_info -> patient_info_ALL including only the 104 patients with LRTI adjudication of Definite or No Evidence
-
-protein_mat -> protein_mat_ALL including only the 104 patients with LRTI adjudication of Definite or No Evidence. Rownames match up with patient_id column in patient_info
-
-parameters -> Includes parameters for the data such as number of proteins, patients, and Definite vs. No Evidence split. 
-
-
-
-## LASSO / RF results
-
-lasso_preds -> combined predicted probabilities for each test sample. Shows the probability of Definite for all 104 samples
-
-lasso_fold_coefs -> shows the coefficients for all proteins with a nonzero coefficient, and shows the fold number for each of the proteins.
-
-lasso_fold_coefs_top3 -> Isolates the top 3 proteins by absolute value of the coefficients. Includes the sign (negative or positive association)
-
-lasso_fold_coefs_top1/3_per_fold -> Returns the top 1 or 3 proteins per fold from LASSO
-
-lassoRF_preds -> Out-of-fold predictions for each patient in the test fold. Shows the LRTI adjudication next to the predicted probability of Definite for each of the 104 patients
-
-lassoRF_votes -> OOB probability estimates for the training set.
 
 
 
@@ -691,16 +1064,11 @@ lassoRF_votes -> OOB probability estimates for the training set.
 
 ### AUC Values 
 
-lasso_fold_coefs: 0.9137
+lasso_fold_coefs: 0.919
 
-lasso_fold_coefs_top3: 0.8144
+lasso_fold_coefs_top1_per_fold: 0.756
 
-lasso_fold_coefs_top1_per_fold: 0.7336
-
-lasso_fold_coefs_top3_per_fold: 0.8952
-
-
-
+lasso_fold_coefs_top3_per_fold: 0.905
 
 
 
