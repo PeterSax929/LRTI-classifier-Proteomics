@@ -116,6 +116,8 @@ write.csv(protein_mat_PROBEID,
 
 
 
+
+
 sum(duplicated(Meta.Data$SubjectID)) # Should be 0
 
 length(patients_vector) # Should be 151
@@ -511,7 +513,6 @@ Note: 33 no evidence patients creates one fold with a 14:7 definite ratio. This 
 
 # 5. Run LASSO
 
-
 ```{r}
 
 #| warning: false
@@ -539,6 +540,10 @@ protein_mat <- read.csv(
   file.path(data_dir, "protein_mat.csv"),
   stringsAsFactors=F, row.names=1, check.names=F)
 
+protein_lookup_table <- read.csv(
+  file.path(data_dir, "protein_lookup_table.csv"),
+  stringsAsFactors=F)
+
 Parameters <- read.csv(
   file.path(data_dir, "parameters.csv"),
   stringsAsFactors=F, row.names=1)
@@ -562,42 +567,109 @@ y <- patient_info_with_folds$LRTI_adjudication == "Definite"
 
 
 # Function to extract nonzero coefficients
-lasso_coef_df <- function(mod) {
-  coefs <- coef(mod, s = "lambda.1se")[, 1]
-  coefs <- coefs[-1]  # remove intercept
+#lasso_coef_df <- function(mod) {
+  #coefs <- coef(mod, s = "lambda.1se")[, 1]
+  #coefs <- coefs[-1]  # remove intercept
   
-  nonzero <- coefs[coefs != 0]
+  #nonzero <- coefs[coefs != 0]
   
-  if(length(nonzero) < 3){
-    abs_coefs <- abs(coefs)
-    top3 <- sort(abs_coefs, decreasing = TRUE)[1:3]
-    nonzero <- coefs[names(top3)]
-  }
+  #if(length(nonzero) < 3){
+    #abs_coefs <- abs(coefs)
+    #top3 <- sort(abs_coefs, decreasing = TRUE)[1:3]
+    #nonzero <- coefs[names(top3)]
+  #}
   
-  data.frame(protein = names(nonzero), coef = as.numeric(nonzero))
-}
+ #data.frame(protein = names(nonzero), coef = as.numeric(nonzero))
+#}
+
+
+
+
 
 # Function for a single outer CV fold
 lasso_cv_outer_fold <- function(test_fold) {
   train <- patient_info_with_folds$fold != test_fold
-  foldid <- sample(rep(1:nfolds, length.out = sum(train)))
+  #foldid <- sample(rep(1:nfolds, length.out = sum(train))) #uncomment to run 5b.1
+  
 
   
-  mod <- glmnet::cv.glmnet(
-    X[train, ], y[train],
-    family = "binomial",
-    foldid = foldid
-  )
   
-  preds <- predict(mod, X[!train, ], type = "response", s = "lambda.1se")[, 1] %>%
-    data.frame(pred = .) %>%
-    tibble::rownames_to_column("sample_name")
+#------------------------Select all proteins path (5b.1)-----------------------#  
+    
   
-  nonzero <- lasso_coef_df(mod) %>%
-    mutate(fold = test_fold)
   
-  list(pred = preds, mod = mod, coef = nonzero)
+  #mod <- glmnet::cv.glmnet(
+    #X[train, ], y[train],
+    #family = "binomial",
+    #foldid = foldid
+  #)
+  
+  #preds <- predict(mod, X[!train, ], type = "response", s = "lambda.1se")[, 1] %>%
+    #data.frame(pred = .) %>%
+    #tibble::rownames_to_column("sample_name")
+  
+  #nonzero <- lasso_coef_df(mod) %>%
+   #mutate(fold = test_fold)
+
+
+  
+#--------------------Select best lambda path (5b.2)----------------------------#  
+  
+  
+ # Fit full lambda path (no CV)
+fit <- glmnet::glmnet(
+  X[train, ], y[train],
+  family = "binomial",
+  standardize = FALSE
+)
+
+# Count nonzero coefficients at each lambda
+nz <- apply(fit$beta, 2, function(b) sum(b != 0))
+
+# Identify lambda that selects exactly 3 proteins
+if (any(nz == 3)) {
+  # Choose the *largest* lambda with exactly 3 (strongest regularization)
+  lambda_k3 <- fit$lambda[which(nz == 3)[1]]
+} else {
+  # Fail-safe: choose lambda with closest >3, then trim to top3
+  idx <- which.min(abs(nz - 3))
+  lambda_k3 <- fit$lambda[idx]
 }
+
+# Predictions at lambda_k3
+preds <- predict(fit, X[!train, ], type = "response", s = lambda_k3)[, 1] %>%
+  data.frame(pred = .) %>%
+  tibble::rownames_to_column("sample_name")
+
+# Extract coefficients at lambda_k3
+coefs_vec <- coef(fit, s = lambda_k3)[-1, 1]  # remove intercept
+
+# Keep nonzero — if >3, keep top 3
+nonzero <- coefs_vec[coefs_vec != 0]
+
+if (length(nonzero) > 3) {
+  top3 <- sort(abs(nonzero), decreasing = TRUE)[1:3]
+  nonzero <- nonzero[names(top3)]
+}
+
+# Build dataframe
+nonzero <- data.frame(
+  protein = names(nonzero),
+  coef = as.numeric(nonzero),
+  fold = test_fold
+)
+
+  
+  list(pred = preds, mod = fit, coef = nonzero) #Change to mod = mod to run 5b.1
+}
+
+
+
+
+#------------------------Run LASSO on all folds (5b.3)-------------------------#
+
+
+
 
 # Run LASSO across all folds
 lasso_results <- lapply(1:max(patient_info_with_folds$fold), lasso_cv_outer_fold)
@@ -639,16 +711,16 @@ lasso_fold_coefs <- merge(
 
 
 # Select top 1 per fold
-lasso_fold_coefs_top1_per_fold <- lasso_fold_coefs %>%
-  group_by(fold) %>%
-  slice_max(order_by = abs(coef), n = 1, with_ties = FALSE) %>%
-  ungroup()
+#lasso_fold_coefs_top1_per_fold <- lasso_fold_coefs %>%
+  #group_by(fold) %>%
+  #slice_max(order_by = abs(coef), n = 1, with_ties = FALSE) %>%
+  #ungroup()
 
 # Select top 3 per fold
-lasso_fold_coefs_top3_per_fold <- lasso_fold_coefs %>%
-  group_by(fold) %>%
-  slice_max(order_by = abs(coef), n = 3, with_ties = FALSE) %>%
-  ungroup()
+#lasso_fold_coefs_top3_per_fold <- lasso_fold_coefs %>%
+  #group_by(fold) %>%
+  #slice_max(order_by = abs(coef), n = 3, with_ties = FALSE) %>%
+  #ungroup()
 
 
 
@@ -666,13 +738,13 @@ write.csv(lasso_fold_coefs,
           #file.path(results_dir, "lasso_folds_coefs_top3.csv"),
           #row.names=F)
 
-write.csv(lasso_fold_coefs_top1_per_fold,
-          file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-          row.names=F)
+#write.csv(lasso_fold_coefs_top1_per_fold,
+          #file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
+          #row.names=F)
 
-write.csv(lasso_fold_coefs_top3_per_fold,
-          file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-          row.names=F)
+#write.csv(lasso_fold_coefs_top3_per_fold,
+          #file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
+          #row.names=F)
 
 
 
@@ -687,9 +759,18 @@ print(table(lasso_fold_coefs$protein))
 all(lasso_fold_coefs$protein %in% 
       protein_lookup_table$SYMBOL)  # Should return TRUE
 
+nrow(lasso_fold_coefs) == 15 # Should return TRUE
+
+all(rownames(X) == patient_info_with_folds$patient_id) # Should return TRUE
+
+
+
 
 
 ```
+
+
+
 
 
 
@@ -881,6 +962,23 @@ write.csv(rf_votes,
 
 
 
+#------------------------------6f. Safety Check--------------------------------#
+
+
+
+
+# Summary
+table(selected_lasso_coefs$protein)
+
+
+all(selected_lasso_coefs$protein %in% colnames(protein_mat)) # Should return TRUE
+
+
+nrow(rf_preds) == nrow(patient_info_with_folds) # Should return TRUE
+
+
+
+
 
 ```
 
@@ -1045,24 +1143,41 @@ legend("bottomright", legend = paste("Fold", 1:max_fold), col = 1:max_fold, lwd 
 
 
 
-# Mean AUC / 95% CI for Mean AUC
-mean_auc <- mean(auc_lassoRF$auc)
+#Mean AUC / 95% CI for Mean AUC 
+#mean_auc <- mean(auc_lassoRF$auc) 
 
-sd_auc <- sd(auc_lassoRF$auc)
-n_folds <- nrow(auc_lassoRF)
+#sd_auc <- sd(auc_lassoRF$auc) 
+#n_folds <- nrow(auc_lassoRF) 
+#se_auc <- sd_auc / sqrt(n_folds) 
 
-se_auc <- sd_auc / sqrt(n_folds)
+#lower_ci <- mean_auc - qt(0.975, df = n_folds - 1) * se_auc 
+#upper_ci <- mean_auc + qt(0.975, df = n_folds - 1) * se_auc 
 
-lower_ci <- mean_auc - qt(0.975, df = n_folds - 1) * se_auc
-upper_ci <- mean_auc + qt(0.975, df = n_folds - 1) * se_auc
-
-message("Lower AUC across folds: ", round(lower_ci, 3))
-message("Mean AUC across folds: ", round(mean_auc, 3))
-message("Upper AUC across folds: ", round(upper_ci, 3))
+#message("Lower AUC across folds: ", round(lower_ci, 3)) 
+#message("Mean AUC across folds: ", round(mean_auc, 3)) 
+#message("Upper AUC across folds: ", round(upper_ci, 3))
 
 
+
+# DeLong 95% CI for overall ROC
+ci_auc <- pROC::ci.auc(
+  pROC::roc(
+    response = factor(merged_preds$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = merged_preds$pred,
+    direction = "<"
+  ),
+  conf.level = 0.95
+)
+
+message("Lower AUC: ", round(ci_auc[1], 3))
+message("Mean AUC: ", round(as.numeric(ci_auc[2]), 3))
+message("Upper AUC: ", round(ci_auc[3], 3))
 
 print(auc_lassoRF)
+
+
+
+
 
 
 ```
@@ -1078,11 +1193,7 @@ print(auc_lassoRF)
 
 ### AUC Values 
 
-lasso_fold_coefs: 0.919  95%CI[0.829, 1.01]
-
-lasso_fold_coefs_top1_per_fold: 0.756  95%CI[0.629, 0.883]
-
-lasso_fold_coefs_top3_per_fold: 0.905  95%CI[0.822, 0.989]
+Mean AUC: 0.904, 95% CI[0.846, 0.963]
 
 
 
