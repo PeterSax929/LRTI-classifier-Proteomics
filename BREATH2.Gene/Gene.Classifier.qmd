@@ -6,10 +6,19 @@ toc: true
 
 
 
-# Import Data
+# 1. Import Data
 
 ```{r}
 #| warning: false
+
+
+
+
+#-------------------------------1a. Import metadata----------------------------#
+
+
+
+
 
 library(dplyr)
 library(magrittr)
@@ -18,22 +27,31 @@ data_dir <- "C:/Users/User/Documents/UCSF/BREATH2.Gene/data"
 results_dir <- "C:/Users/User/Documents/UCSF/BREATH2.Gene/results"
 
 
-metadata_df_ALL <- read.csv(file.path(data_dir, "sample_metadata.csv"), stringsAsFactors=F)
+metadata_df_ALL <- read.csv(
+  file.path(data_dir, "sample_metadata.csv"),
+  stringsAsFactors=F)
 
-JCI_expanded_metadata <- read.csv(file.path(data_dir, "fixed_metadata_10242025.csv"))
+JCI_expanded_metadata <- read.csv(
+  file.path(data_dir, "fixed_metadata_10242025.csv"),
+  stringsAsFactors=F)
 
-vap_soma_normalized <- read.csv(file.path(data_dir, "vap_soma_normalized.csv"))
-
-
-
-
-
-#------------------------------------------------------------------------------#
-
-
+vap_soma_normalized <- read.csv(
+  file.path(data_dir, "vap_soma_normalized.csv"),
+  stringsAsFactors=F)
 
 
-# Include only the 150 patients with both transcriptomic and proteomic data
+
+
+
+
+#----------------------1b. Ready metadata table for LASSO----------------------#
+
+
+
+
+
+
+# Include only the 151 patients with both transcriptomic and proteomic data
 patients_vector <- intersect(vap_soma_normalized$patient_id, 
                              JCI_expanded_metadata$SubjectID)
 
@@ -51,7 +69,7 @@ patient_info_ALL <- data.frame(
   sex = Meta.Data$sex,
   age_in_years = Meta.Data$age_in_years,
   LRTI_adjudication = Meta.Data$LRTI_adjudication,
-  stringsAsFactors = FALSE
+  stringsAsFactors=F
 )
 
 # Restrict metadata_df to same 105 patients used in patient_info
@@ -63,15 +81,19 @@ metadata_df <- metadata_df_ALL %>%
   relocate(patient_id, .after = sample_name)
 
 
-nrow(metadata_df)  # should be 105
 
 # Write csv
-write.csv(metadata_df, file.path(data_dir, "metadata_df.csv"), row.names = FALSE)
+write.csv(metadata_df, 
+          file.path(data_dir, "metadata_df.csv"), 
+          row.names=F)
 
 
 
 
-#------------------------------------------------------------------------------#
+
+#------------------------1c. Define workflow parameters------------------------#
+
+
 
 
 
@@ -87,68 +109,148 @@ Parameters <- data.frame(c(npatients, Definite, No_Evidence, nfolds, ntrees))
 row.names(Parameters) = c("Patients", "Definite", "No Evidence", "Folds", "RF Trees")
 colnames(Parameters) = "Count"
 
-write.csv(Parameters, file.path(data_dir, "parameters.csv"), row.names = TRUE)
-
-print(Parameters)
-
-
+write.csv(Parameters,
+          file.path(data_dir, "parameters.csv"), 
+          row.names=T)
 
 
-#------------------------------------------------------------------------------#
+
+
+
+
+#-----------------------------1d. Safety Check---------------------------------#
+
+
+
+
+
+print(Parameters)  
+
+nrow(metadata_df)  # should be 105
+
+sum(duplicated(metadata_df$sample_name))  # Should be 0
+
+sum(is.na(Meta.Data$SubjectID))  # Should be 0
+
+
+
+
+
+
 ```
 
 
 
 
-# Fold Assignment
+# 2. Fold Assignment
 
 
 ```{r}
 #| warning: false
 
+
+
+#-----------------------------2a. Import metadata------------------------------#
+
+
+
+
 library(dplyr)
+library(rsample)
 library(magrittr)
+
+
+
+
+
+# Read csvs
+metadata_df <- read.csv(
+  file.path(data_dir, "metadata_df.csv"), 
+  stringsAsFactors=F)
+
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names=1)
+
+
+
+# Number of folds
+nfolds <- as.numeric(Parameters["Folds", "Count"])
+
+# Number of No Evidence patients
+No_Evidence <- as.numeric(Parameters["No Evidence", "Count"])
+
+# Minimum required per fold
+min_NE_per_fold <- floor(No_Evidence / nfolds)
+
+
+
+
+
+
+#-------------------------2b. Fold Assignment Using rsample -------------------#
+
+
+
+
+
+folds_ok <- FALSE
 
 # Set seed
 set.seed(8634782)
 
-metadata_df <- read.csv(file.path(data_dir, "metadata_df.csv"), stringsAsFactors=F)
-
-
-
-#------------------------------------------------------------------------------#
-
-
-
-# Generate folds for 5-fold cross-validation; ensure each fold has >=6 No Evidence samples
-folds_ok <- FALSE
-
-# Adds fold column to patient_info to create patient_info_with_folds
+# While loop enforcing constraints
 while (!folds_ok) {
+
+  # Stratified k-fold CV
+  vfold_obj <- vfold_cv(
+    data = metadata_df,
+    v = nfolds,
+    strata = "LRTI_adjudication"
+  )
+
+  # Add placeholder fold column (will be last column)
   metadata_df_with_folds <- metadata_df %>%
-    group_by(LRTI_adjudication) %>%
-    mutate(fold = sample(rep(1:nfolds, length.out = n()))) %>%
-    ungroup()
-  
-# Check if each fold has at least 6 "No Evidence" samples because ⌊33 / 5⌋ = 6
-  counts <- table(metadata_df_with_folds$fold, 
-                  metadata_df_with_folds$LRTI_adjudication)
-  if (all(counts[, "No Evidence"] >= 6)) {
+    mutate(fold = NA_integer_)
+
+  # Fill fold assignments
+  for (i in seq_len(nfolds)) {
+    fold_indices <- vfold_obj$splits[[i]]$in_id
+    val_indices <- setdiff(seq_len(nrow(metadata_df)), fold_indices)
+    metadata_df_with_folds$fold[val_indices] <- i
+  }
+
+  # Count how many No Evidence cases per fold
+  counts <- table(
+    metadata_df_with_folds$fold,
+    metadata_df_with_folds$LRTI_adjudication
+  )
+
+  # Check constraint
+  if (all(counts[, "No Evidence"] >= min_NE_per_fold)) {
     folds_ok <- TRUE
   }
 }
 
+# Save output
+write.csv(
+  metadata_df_with_folds,
+  file.path(data_dir, "metadata_df_with_folds.csv"),
+  row.names=F)
 
 
-#------------------------------------------------------------------------------#
+
+#------------------------------2c. Safety Check--------------------------------#
 
 
-
-# Patient info with fold assignment
-write.csv(metadata_df_with_folds, 
-          file.path(data_dir, "metadata_df_with_folds.csv"), row.names = FALSE)
 
 print(counts)
+
+print(min_NE_per_fold)
+
+
+
+
 ```
 
 
@@ -157,135 +259,208 @@ print(counts)
 
 
 
-# Filter / transform host counts
+# 3/4. VST / LASSO 
 
 ```{r}
 #| warning: false
+
+
+
+
+
+#-----------------------3a. Import host counts & metadata----------------------#
+
+
+
+
 
 library(dplyr)
 library(magrittr)
 library(DESeq2)
-
-# Read metadata_df_with_folds table
-metadata_df_with_folds <- read.csv(file.path(data_dir, "metadata_df_with_folds.csv"), stringsAsFactors = F) 
-  
-# Read host counts, omitting the first column (gene symbol)
-host_counts <- read.csv(file.path(data_dir, "host_gene_counts.csv"), stringsAsFactors = F, row.names = 1)[,-1]
-
-# Filter host counts to the samples used for CV
-host_counts[, metadata_df_with_folds$sample_name] ->
-  cv_host_counts
-
-
-
-#------------------------------------------------------------------------------#
-
-
-
-
-# Filter for genes with >10 counts in >20% of samples
-keep <- rowSums(cv_host_counts > 10) > 0.2*ncol(cv_host_counts)
-cv_host_counts <- cv_host_counts[keep, ]
-
-# Apply variance stabilizing transform
-dds <- DESeq2::DESeqDataSetFromMatrix(countData = cv_host_counts,
-                                      colData = metadata_df_with_folds,
-                                      design = ~1)
-vsd <- DESeq2::varianceStabilizingTransformation(dds)
-# Round transformed values to 2 decimal digits
-vsd_mat <- SummarizedExperiment::assay(vsd) %>% 
-  round(., digits=2)
-
-# Save VST output
-write.csv(vsd_mat, file.path(data_dir, "cv_vst.csv"))
-```
-
-
-
-
-# Run LASSO
-
-```{r}
-#| warning: false
-
-library(dplyr)
-library(magrittr)
 library(glmnet)
 library(tibble)
 
 set.seed(8634782)
 
+# Metadata with folds
+metadata_df_with_folds <- read.csv(
+  file.path(data_dir, "metadata_df_with_folds.csv"),
+  stringsAsFactors=F)
 
-# Import data
-metadata_df_with_folds <- read.csv(file.path(data_dir, "metadata_df_with_folds.csv"), stringsAsFactors = FALSE)
-vsd_mat <- read.csv(file.path(data_dir, "cv_vst.csv"), row.names = 1)
+# Host counts (remove gene_symbol col, rownames = ENSG)
+host_counts <- read.csv(
+  file.path(data_dir, "host_gene_counts.csv"),
+  stringsAsFactors=F, row.names = 1)[, -1]
 
-# Vector mapping Ensembl IDs → gene symbols
-read.csv(file.path(data_dir, "host_gene_counts.csv"), stringsAsFactors = FALSE) %>%
-  {`names<-`(.$gene_symbol, .$X)} ->
-  ensg2gene
+# Filter to samples used for CV
+cv_host_counts <- host_counts[, metadata_df_with_folds$sample_name, drop = FALSE]
 
-# Prepare matrices
-X <- t(as.matrix(vsd_mat))   # transpose so samples = rows, genes = columns
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names = 1)
+
+nfolds <- as.numeric(Parameters["Folds", "Count"])
+
+
+
+
+
+
+#--------------------------------3b. VST Transform-----------------------------#
+
+
+
+
+
+
+# Keep genes: >10 counts in >20% samples
+keep <- rowSums(cv_host_counts > 10) > 0.2 * ncol(cv_host_counts)
+cv_host_counts <- cv_host_counts[keep, ]
+
+# DESeq2 VST
+dds <- DESeq2::DESeqDataSetFromMatrix(
+  countData = cv_host_counts,
+  colData = metadata_df_with_folds,
+  design = ~1
+)
+
+vsd <- DESeq2::varianceStabilizingTransformation(dds)
+vsd_mat <- SummarizedExperiment::assay(vsd) %>% round(2)
+
+# Save VST output
+write.csv(
+  vsd_mat,
+  file.path(data_dir, "cv_vst.csv"),
+  row.names=T)
+
+
+
+
+
+
+#---------------------------4a. Ready data for LASSO---------------------------#
+
+
+
+
+
+
+
+# Map ENSG → SYMBOL vector
+ensg2gene <- read.csv(
+  file.path(data_dir, "host_gene_counts.csv"),
+  stringsAsFactors=F
+) %>%
+  { `names<-`(.$gene_symbol, .$X) }
+
+# Prepare X and y
+X <- t(as.matrix(vsd_mat))    # samples x genes
 y <- metadata_df_with_folds$LRTI_adjudication == "Definite"
 
 
 
 
-#-----------------------------------------------------------------------------#
 
 
 
 
-# Function to extract nonzero coefficients with gene symbol mapping
-lasso_coef_df <- function(mod) {
-  coefs <- coef(mod, s = "lambda.1se")[, 1]
-  coefs <- coefs[-1]  # remove intercept
+#----------------------------4b. LASSO Workflow--------------------------------#
+
+
+
+
+
+
+
+lasso_cv_outer_fold <- function(test_fold) {
+
+  train <- metadata_df_with_folds$fold != test_fold
+
+  # Fit full lambda path
+  fit <- glmnet::glmnet(
+    X[train, ], y[train],
+    family = "binomial",
+    standardize = TRUE
+  )
+
+  # Count nonzero genes at each lambda
+  nz <- apply(fit$beta, 2, function(b) sum(b != 0))
+
+  # Lambda that selects exactly 3 genes
+  if (any(nz == 3)) {
+    lambda_k3 <- fit$lambda[which(nz == 3)[1]]   # largest lambda w/ 3 nonzero
+  } else {
+    # fallback: closest to 3, then later trim
+    idx <- which.min(abs(nz - 3))
+    lambda_k3 <- fit$lambda[idx]
+  }
+
+  # Predict
+  preds <- predict(fit, X[!train, ], type = "response", s = lambda_k3)[, 1] %>%
+    data.frame(pred = .) %>%
+    tibble::rownames_to_column("sample_name")
+
+  # Coefficients at selected lambda
+  coefs_vec <- coef(fit, s = lambda_k3)[-1, 1]
+
+  nonzero <- coefs_vec[coefs_vec != 0]
   
-  nonzero <- coefs[coefs != 0]
   
-  # Ensure at least top 3 by absolute value if model is sparse
-  if (length(nonzero) < 3) {
-    abs_coefs <- abs(coefs)
-    top3 <- sort(abs_coefs, decreasing = TRUE)[1:3]
-    nonzero <- coefs[names(top3)]
+  
+  # Ensure at least 3 genes
+if (length(nonzero) < 3) {
+  # take the strongest remaining coefficients
+  coefs_all <- coef(fit, s = lambda_k3)[-1, 1]
+  abs_all <- sort(abs(coefs_all), decreasing = TRUE)
+  needed <- 3 - length(nonzero)
+  add_genes <- names(abs_all)[!names(abs_all) %in% names(nonzero)][1:needed]
+  nonzero <- c(nonzero, coefs_all[add_genes])
+}
+
+
+  
+
+  # If >3, keep top 3 by abs value
+  if (length(nonzero) > 3) {
+    top3 <- sort(abs(nonzero), decreasing = TRUE)[1:3]
+    nonzero <- nonzero[names(top3)]
   }
   
-  data.frame(
+  
+  
+  
+
+  # Build fold-specific coefficient dataframe
+  nonzero_df <- data.frame(
     gene = names(nonzero),
     coef = as.numeric(nonzero),
     gene_symbol = ensg2gene[names(nonzero)],
-    stringsAsFactors = FALSE
+    fold = test_fold, 
+    stringsAsFactors=F
   )
-}
 
-# Function for a single outer CV fold
-lasso_cv_outer_fold <- function(test_fold) {
-  train <- metadata_df_with_folds$fold != test_fold
-  foldid <- metadata_df_with_folds$fold[train]
-  foldid <- as.integer(as.factor(foldid))
-  
-  mod <- glmnet::cv.glmnet(
-    X[train, ], y[train],
-    family = "binomial",
-    foldid = foldid
-  )
-  
-  preds <- predict(mod, X[!train, ], type = "response", s = "lambda.1se")[, 1] %>%
-    data.frame(pred = .) %>%
-    tibble::rownames_to_column("sample_name")
-  
-  nonzero <- lasso_coef_df(mod) %>%
-    mutate(fold = test_fold)
-  
-  list(pred = preds, mod = mod, coef = nonzero)
+  list(pred = preds, mod = fit, coef = nonzero_df)
 }
 
 
-# Run LASSO across all folds
-lasso_results <- lapply(1:max(metadata_df_with_folds$fold), lasso_cv_outer_fold)
 
-# Combine predictions and coefficients
+
+
+#------------------------4c. Run LASSO across folds----------------------------#
+
+
+
+
+
+
+
+lasso_results <- lapply(
+  1:max(metadata_df_with_folds$fold),
+  lasso_cv_outer_fold)
+
+
+
+# Collect predictions and coefficients for each fold
 lasso_preds <- lasso_results %>%
   lapply(function(x) x$pred) %>%
   bind_rows()
@@ -296,71 +471,32 @@ lasso_fold_coefs <- lasso_results %>%
 
 
 
-#-----------------------------------------------------------------------------#
+
+write.csv(
+  lasso_preds,
+  file.path(results_dir, "lasso_preds.csv"),
+  row.names=F)
+
+write.csv(
+  lasso_fold_coefs,
+  file.path(results_dir, "lasso_fold_coefs.csv"),
+  row.names=F)
 
 
 
 
-lasso_fold_coefs <- lasso_fold_coefs %>%
-  mutate(
-    coef = as.numeric(coef),
-    gene = as.character(gene),
-    fold = as.integer(fold)
-  )
 
-# Top 3 by absolute coefficient (overall)
-lasso_fold_coefs_top3 <- lasso_fold_coefs %>%
-  group_by(gene) %>%
-  slice_max(order_by = abs(coef), n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  arrange(desc(abs(coef))) %>%
-  head(3)
+#---------------------------4d. Safety Check-----------------------------------#
 
-# Top 1 per fold
-lasso_fold_coefs_top1_per_fold <- lasso_fold_coefs %>%
-  group_by(fold) %>%
-  slice_max(order_by = abs(coef), n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-# Top 3 per fold
-lasso_fold_coefs_top3_per_fold <- lasso_fold_coefs %>%
-  group_by(fold) %>%
-  slice_max(order_by = abs(coef), n = 3, with_ties = FALSE) %>%
-  ungroup()
-
-
-
-#-----------------------------------------------------------------------------#
-
-
-write.csv(lasso_preds,
-          file.path(results_dir, "lasso_preds.csv"),
-          row.names = FALSE)
-
-write.csv(lasso_fold_coefs,
-          file.path(results_dir, "lasso_fold_coefs.csv"),
-          row.names = FALSE)
-
-write.csv(lasso_fold_coefs_top3,
-          file.path(results_dir, "lasso_fold_coefs_top3.csv"),
-          row.names = FALSE)
-
-write.csv(lasso_fold_coefs_top1_per_fold,
-          file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-          row.names = FALSE)
-
-write.csv(lasso_fold_coefs_top3_per_fold,
-          file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-          row.names = FALSE)
-
-
-
-#-----------------------------------------------------------------------------#
 
 
 
 print(table(lasso_fold_coefs$gene))
-print(lasso_fold_coefs_top3)
+
+nrow(lasso_fold_coefs) == 15 # Should return TRUE
+
+all(rownames(X) == metadata_df_with_folds$sample_name) # Should return TRUE
+
 
 
 ```
@@ -368,10 +504,32 @@ print(lasso_fold_coefs_top3)
 
 
 
-# Random Forest
+
+
+
+
+
+
+
+
+
+
+
+
+# 5. Random Forest
 
 ```{r}
 #| warning: false
+
+
+
+
+#---------------------------5a. Ready Data for RF Workflow---------------------#
+
+
+
+
+
 
 library(dplyr)
 library(magrittr)
@@ -381,27 +539,52 @@ library(tibble)
 set.seed(8634782)
 
 # Import data
-metadata_df_with_folds <- read.csv(file.path(data_dir, "metadata_df_with_folds.csv"), stringsAsFactors = FALSE)
-vsd_mat <- read.csv(file.path(data_dir, "cv_vst.csv"), row.names = 1, check.names = FALSE)
+metadata_df_with_folds <- read.csv(
+  file.path(data_dir, "metadata_df_with_folds.csv"),
+  stringsAsFactors=F)
+
+vsd_mat <- read.csv(
+  file.path(data_dir, "cv_vst.csv"),
+  row.names = 1,
+  check.names = FALSE)
+
+Parameters <- read.csv(
+  file.path(data_dir, "parameters.csv"),
+  stringsAsFactors=F, row.names=1)
+
+# Define ntrees 
+ntrees <- as.numeric(Parameters["RF Trees", "Count"])
+
+
+
 
 # Use transposed version
 vsd_mat_t <- t(as.matrix(vsd_mat))
 
 # Convert patient_id to character
-metadata_df_with_folds$patient_id <- as.character(metadata_df_with_folds$patient_id)
+metadata_df_with_folds$sample_name <- as.character(metadata_df_with_folds$sample_name)
 
 # Import selected proteins
 lasso_fold_coefs <- read.csv(
   file.path(results_dir, "lasso_fold_coefs.csv"), 
-  stringsAsFactors = FALSE)
+  stringsAsFactors=F)
 
-lasso_fold_coefs_top1_per_fold <- read.csv(
-  file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-  stringsAsFactors = FALSE)
+#lasso_fold_coefs_top1_per_fold <- read.csv(
+  #file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
+  #stringsAsFactors=F)
 
-lasso_fold_coefs_top3_per_fold <- read.csv(
-  file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-  stringsAsFactors = FALSE)
+#lasso_fold_coefs_top3_per_fold <- read.csv(
+  #file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
+  #stringsAsFactors=F)
+
+
+
+
+
+#-------------------------5b. Choose proteins to run---------------------------#
+
+
+
 
 
 # Choose which LASSO feature set to use for RF (uncomment ONE line)
@@ -422,7 +605,8 @@ selected_lasso_coefs <- lasso_fold_coefs
 
 
 
-#-----------------------------------------------------------------------------#
+#-------------------------5c. RF Workflow--------------------------------------#
+
 
 
 
@@ -463,7 +647,10 @@ metadata_df_with_folds <- as.data.frame(metadata_df_with_folds)
 
 
 
-#-----------------------------------------------------------------------------#
+
+
+#--------------------------5d. Collect preds-----------------------------------#
+
 
 
 
@@ -471,23 +658,36 @@ metadata_df_with_folds <- as.data.frame(metadata_df_with_folds)
 # Collect out-of-fold predictions for all samples
 rf_preds <- cv_list %>%
   lapply(function(x) {
-    # Get the patient IDs in this test fold
-    test_patients <- metadata_df_with_folds$patient_id[metadata_df_with_folds$fold == x$test_fold]
     data.frame(
-      patient_id = test_patients,
+      sample_name = rownames(vsd_mat_t)[metadata_df_with_folds$fold == x$test_fold],
       pred = x$pred
     )
   }) %>%
   bind_rows() %>%
   dplyr::left_join(
-    dplyr::select(metadata_df_with_folds, patient_id, LRTI_adjudication),
-    by = "patient_id"
+    dplyr::select(metadata_df_with_folds, sample_name, LRTI_adjudication),
+    by = "sample_name"
   ) %>%
-  dplyr::relocate(LRTI_adjudication, .after = patient_id)
-
+  dplyr::relocate(LRTI_adjudication, .after = sample_name)
 
 # Save RF predictions
-write.csv(rf_preds, file.path(results_dir, "lassoRF_preds.csv"), row.names = FALSE)
+write.csv(rf_preds, 
+          file.path(results_dir, "lassoRF_preds.csv"),
+          row.names=F)
+
+
+
+
+
+
+
+
+
+
+
+
+#------------------------5e. Collect votes-------------------------------------#
+
 
 
 
@@ -495,106 +695,253 @@ write.csv(rf_preds, file.path(results_dir, "lassoRF_preds.csv"), row.names = FAL
 # Collect RF votes (training set OOB probabilities)
 rf_votes <- cv_list %>%
   lapply(function(x) {
-    # Boolean for training samples
-    train <- metadata_df_with_folds$fold != x$test_fold
-    
-    # Votes are in the order of training samples
-    votes_df <- as.data.frame(x$mod$votes)
-    
-    # Add patient_id column from training set
-    votes_df <- votes_df %>%
-      tibble::rownames_to_column("row_index") %>%  # temporary row index
-      dplyr::mutate(patient_id = metadata_df_with_folds$patient_id[train]) %>%
-      dplyr::select(patient_id, everything())
-    
-    # Keep only the Definite column as 'pred'
-    votes_df <- votes_df %>%
-      dplyr::rename(pred = Definite) %>%
-      dplyr::mutate(test_fold = x$test_fold) %>%
-      dplyr::select(test_fold, patient_id, pred)
-    
-    votes_df
+    as.data.frame(x$mod$votes) %>%
+      tibble::rownames_to_column("sample_name") %>%
+      mutate(test_fold = x$test_fold) %>%
+      rename(pred = Definite) %>%
+      dplyr::select(test_fold, sample_name, pred)
   }) %>%
   bind_rows() %>%
-  # Join with LRTI adjudication
   dplyr::left_join(
-    dplyr::select(metadata_df_with_folds, patient_id, LRTI_adjudication),
-    by = "patient_id"
+    dplyr::select(metadata_df_with_folds, sample_name, LRTI_adjudication),
+    by = "sample_name"
   ) %>%
-  dplyr::relocate(LRTI_adjudication, .after = patient_id)
+  dplyr::relocate(LRTI_adjudication, .after = sample_name)
 
 # Save votes
-write.csv(rf_votes, file.path(results_dir, "lassoRF_votes.csv"), row.names = FALSE)
+write.csv(rf_votes, 
+          file.path(results_dir, "lassoRF_votes.csv"),
+          row.names=F)
 
 
 
 
 
-
-#-----------------------------------------------------------------------------#
-
+#------------------------------6f. Safety Check--------------------------------#
 
 
 
 
-#print(head(rf_preds))
-#print(head(rf_votes))
+# Summary
+table(selected_lasso_coefs$gene)
+
+
+all(selected_lasso_coefs$gene %in% colnames(vsd_mat_t)) # Should return TRUE
+
+
+nrow(rf_preds) == nrow(metadata_df_with_folds) # Should return TRUE
+
+
+
 ```
 
 
 
-# Generate ROC Graph
+
+
+
+
+
+
+
+
+
+
+# 6. Generate ROC Graph
 
 ```{r}
 #| warning: false
+
+
+
+
+
+
+#----------------------------6a. Import metadata & preds-----------------------#
+
+
+
+
 
 library(dplyr)
 library(magrittr)
 library(pROC)
 
-# Import out-of-fold LASSO / RF predictions
-lassoRF_preds <- read.csv(file.path(results_dir, "lassoRF_preds.csv"), stringsAsFactors = FALSE)
 
-# Ensure classes are correct
-lassoRF_preds$LRTI_adjudication <- factor(lassoRF_preds$LRTI_adjudication, 
-                                          levels = c("No Evidence", "Definite"))
+# Import fold assignments
+metadata_df_with_folds <- read.csv(
+  file.path(data_dir, "metadata_df_with_folds.csv"),
+  stringsAsFactors=F)
 
-# Function to calculate and plot ROC/AUC for LASSO / RF
-output_auc_roc_lassoRF <- function(preds_df, output_suffix) {
+# Import out-of-fold predictions
+lassoRF_preds <- read.csv(
+  file.path(results_dir, "lassoRF_preds.csv"),
+  stringsAsFactors=F)
 
-  # Compute overall ROC and AUC
-  roc_obj <- roc(preds_df$LRTI_adjudication == "Definite", preds_df$pred)
-  auc_value <- auc(roc_obj)
+# Ensure consistent factor levels
+lassoRF_preds$LRTI_adjudication <- factor(
+  lassoRF_preds$LRTI_adjudication,
+  levels = c("No Evidence", "Definite")
+)
 
-  message("Overall AUC for ", output_suffix, ": ", round(auc_value, 3))
-
-  # Plot ROC
-  plot(
-    roc_obj,
-    main = paste("ROC Curve -", output_suffix),
-    col = "#1c61b6",
-    lwd = 2
+# Merge once so we reuse this everywhere
+merged_preds <- lassoRF_preds %>%
+  dplyr::inner_join(
+    metadata_df_with_folds %>% dplyr::select(sample_name, fold),
+    by = "sample_name"
   )
-  abline(a = 0, b = 1, lty = 2, col = "gray")
 
-  # Save to PDF
+
+
+
+
+#------------------------6b. Per-fold AUC + ROC plotting-----------------------#
+
+
+
+
+
+
+output_auc_roc <- function(preds_df, output_suffix) {
+
+  # Compute per-fold AUC
+  auc_df <- preds_df %>%
+    group_by(fold) %>%
+    summarize({
+  roc_obj <- pROC::roc(
+    response  = factor(LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = pred,
+    direction = "<"
+  )
+  ci_vals <- pROC::ci.auc(roc_obj, conf.level = 0.95)
+  tibble(
+    auc = as.numeric(roc_obj$auc),
+    auc_lower = ci_vals[1],
+    auc_upper = ci_vals[3]
+  )
+}, .groups = "drop")
+
+
+  # Determine number of folds
+  max_fold <- max(auc_df$fold)
+
+  # Create ROC PDF (all folds overlayed)
   pdf(file.path(results_dir, paste0("ROC_", output_suffix, ".pdf")))
-  plot(
-    roc_obj,
-    main = paste("ROC Curve -", output_suffix),
-    col = "#1c61b6",
-    lwd = 2
-  )
-  abline(a = 0, b = 1, lty = 2, col = "gray")
+
+  for (i in 1:max_fold) {
+    fold_data <- preds_df %>% filter(fold == i)
+
+    roc_obj <- pROC::roc(
+      response  = factor(fold_data$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+      predictor = fold_data$pred,
+      direction = "<"
+    )
+
+    plot(roc_obj, add = (i != 1), col = i)
+  }
+
   dev.off()
 
-  # Return AUC
-  return(auc_value)
+  # Save per-fold AUC CSV at the very end (safer if plotting errors occur)
+  write.csv(
+    auc_df,
+    file.path(results_dir, paste0("cv_auc_", output_suffix, ".csv")),
+    row.names=F)
+
+  return(auc_df)
 }
 
-auc_lassoRF <- output_auc_roc_lassoRF(lassoRF_preds, "lassoRF")
+
+
+
+
+
+#------------------------------6c. Plot Graph (in QMD)-------------------------#
+
+
+
+
+
+
+
+# Run AUC computation and PDF creation
+auc_lassoRF <- output_auc_roc(merged_preds, "lassoRF")
+
+max_fold <- max(auc_lassoRF$fold)
+
+# Open empty plot for overlay with top-left orientation
+plot(0, 0, type = "n",
+     xlim = c(1, 0), ylim = c(0, 1),
+     xlab = "Specificity", ylab = "Sensitivity",
+     main = "ROC Curves by Fold")
+
+# Add diagonal reference
+lines(x = c(1, 0), y = c(0, 1), lty = 2, col = "gray")
+
+for (i in 1:max_fold) {
+  fold_data <- merged_preds %>% filter(fold == i)
+
+  roc_obj <- pROC::roc(
+    response  = factor(fold_data$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = fold_data$pred,
+    direction = "<"
+  )
+
+  # Plot specificity directly: axis direction flips via xlim
+  lines(roc_obj$specificities, roc_obj$sensitivities, col = i, lwd = 2)
+}
+
+legend("bottomright", legend = paste("Fold", 1:max_fold), col = 1:max_fold, lwd = 2)
+
+
+
+
+
+
+#------------------------------6d. Summaries----------------------------------#
+
+
+
+
+#Mean AUC / 95% CI for Mean AUC 
+#mean_auc <- mean(auc_lassoRF$auc) 
+
+#sd_auc <- sd(auc_lassoRF$auc) 
+#n_folds <- nrow(auc_lassoRF) 
+#se_auc <- sd_auc / sqrt(n_folds) 
+
+#lower_ci <- mean_auc - qt(0.975, df = n_folds - 1) * se_auc 
+#upper_ci <- mean_auc + qt(0.975, df = n_folds - 1) * se_auc 
+
+#message("Lower AUC across folds: ", round(lower_ci, 3)) 
+#message("Mean AUC across folds: ", round(mean_auc, 3)) 
+#message("Upper AUC across folds: ", round(upper_ci, 3))
+
+
+
+# DeLong 95% CI for overall ROC
+ci_auc <- pROC::ci.auc(
+  pROC::roc(
+    response = factor(merged_preds$LRTI_adjudication, levels = c("No Evidence", "Definite")),
+    predictor = merged_preds$pred,
+    direction = "<"
+  ),
+  conf.level = 0.95
+)
+
+message("Lower AUC: ", round(ci_auc[1], 3))
+message("Mean AUC: ", round(as.numeric(ci_auc[2]), 3))
+message("Upper AUC: ", round(ci_auc[3], 3))
+
 print(auc_lassoRF)
+
+
+
+
+
+
 ```
+
 
 
 
