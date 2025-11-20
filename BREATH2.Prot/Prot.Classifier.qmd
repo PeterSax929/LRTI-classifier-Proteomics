@@ -401,6 +401,7 @@ all(rownames(protein_mat) == patient_info$patient_id)  # Should return TRUE
 
 library(dplyr)
 library(rsample)
+library(magrittr)
 
 
 
@@ -413,6 +414,8 @@ patient_info <- read.csv(
 Parameters <- read.csv(
   file.path(data_dir, "parameters.csv"),
   stringsAsFactors=F, row.names=1)
+
+
 
 # Define number of folds
 nfolds <- as.numeric(Parameters["Folds", "Count"])
@@ -460,12 +463,11 @@ while (!folds_ok) {
   # Fill in fold assignments
   for (i in seq_len(nfolds)) {
     fold_indices <- vfold_obj$splits[[i]]$in_id
-    # everything *not* in fold_indices is validation fold
     val_indices <- setdiff(seq_len(nrow(patient_info)), fold_indices)
     patient_info_with_folds$fold[val_indices] <- i
   }
 
-  # Check constraint: minimum No Evidence per fold
+  # Check how many No Evidence cases per fold
   counts <- table(
     patient_info_with_folds$fold,
     patient_info_with_folds$LRTI_adjudication
@@ -476,7 +478,7 @@ while (!folds_ok) {
   }
 }
 
-# Save
+# Save output
 write.csv(
   patient_info_with_folds,
   file.path(data_dir, "patient_info_with_folds.csv"),
@@ -588,6 +590,7 @@ y <- patient_info_with_folds$LRTI_adjudication == "Definite"
 
 # Function for a single outer CV fold
 lasso_cv_outer_fold <- function(test_fold) {
+  
   train <- patient_info_with_folds$fold != test_fold
   #foldid <- sample(rep(1:nfolds, length.out = sum(train))) #uncomment to run 5b.1
   
@@ -616,11 +619,11 @@ lasso_cv_outer_fold <- function(test_fold) {
 #--------------------Select best lambda path (5b.2)----------------------------#  
   
   
- # Fit full lambda path (no CV)
+ # Fit full lambda path
 fit <- glmnet::glmnet(
   X[train, ], y[train],
   family = "binomial",
-  standardize = FALSE
+  standardize = TRUE
 )
 
 # Count nonzero coefficients at each lambda
@@ -672,7 +675,9 @@ nonzero <- data.frame(
 
 
 # Run LASSO across all folds
-lasso_results <- lapply(1:max(patient_info_with_folds$fold), lasso_cv_outer_fold)
+lasso_results <- lapply(
+  1:max(patient_info_with_folds$fold), 
+  lasso_cv_outer_fold)
 
 # Combine predictions and coefficients
 lasso_preds <- lasso_results %>%
@@ -821,13 +826,13 @@ lasso_fold_coefs <- read.csv(
   file.path(results_dir, "lasso_fold_coefs.csv"), 
   stringsAsFactors=F)
 
-lasso_fold_coefs_top1_per_fold <- read.csv(
-  file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
-  stringsAsFactors=F)
+#lasso_fold_coefs_top1_per_fold <- read.csv(
+  #file.path(results_dir, "lasso_fold_coefs_top1_per_fold.csv"),
+  #stringsAsFactors=F)
 
-lasso_fold_coefs_top3_per_fold <- read.csv(
-  file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
-  stringsAsFactors=F)
+#lasso_fold_coefs_top3_per_fold <- read.csv(
+  #file.path(results_dir, "lasso_fold_coefs_top3_per_fold.csv"),
+  #stringsAsFactors=F)
 
 
 
